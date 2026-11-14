@@ -98,3 +98,71 @@ verify extraction quality on representative documents.
 
 API references: [Gemini structured outputs](https://ai.google.dev/gemini-api/docs/structured-output)
 and [document understanding](https://ai.google.dev/gemini-api/docs/document-processing).
+
+## Comparison and stored cases
+
+`functionality/models.py` is the shared Pydantic contract used by extraction,
+comparison and storage. Keep launching the server from the repository root with
+`python3 -m uvicorn ocr:app --app-dir 'document extraction' ...` so the shared
+`functionality` package is importable.
+
+`functionality/comparision.py` (original spelling retained) accepts one complete
+extracted document. It preserves field evidence, flags unreliable extraction and
+suspected duplicate code/date rows within that document, and uses decimal money
+arithmetic. Missing amounts are not replaced by zero. It does not merge rows,
+compare separate documents as duplicates, or infer codes from descriptions.
+
+```python
+from functionality.models import OCRResponse
+from functionality.comparision import analyze_bill
+from functionality.store_bill import BillStore
+
+# payload is the JSON response from POST /ocr.
+extraction = OCRResponse.model_validate(payload)
+audits = [analyze_bill(document) for document in extraction.documents]
+store = BillStore()  # BILL_DB_PATH or data/bills.sqlite3
+# Obtain this from your authenticated backend session, not a request body.
+owner_id = authenticated_user.id
+case = store.save_extracted_bills(owner_id, extraction, audits)
+case_again = store.get_bill(owner_id, case.id)
+case_list = store.my_bills(owner_id)
+```
+
+There is no CMS data loader/pricing service in this repo yet. `analyze_bill`
+accepts a backend `benchmark_provider(request)` callable and per-line `contexts`
+(keyed by 1-based line number). Each `PricingContext` requires state, locality,
+place of service, units, modifiers and QPP status. The adapter must choose an
+applicable official schedule and return a `Benchmark` matching the entire request,
+with effective dates, release and CMS source URL, or `None` for unsupported cases.
+The benchmark amount must already account for units and modifiers. The URL check
+verifies provenance format only; the adapter is responsible for verifying data.
+A positive `benchmark_difference` is contextual information, never a confirmed
+overcharge, a savings estimate, or the patient's amount owed. No adapter means
+no benchmark prices. An audit's `flagged_count` includes extraction-review needs,
+not just suspected billing discrepancies.
+
+Storage creates one new case per save, preserving every document, source quote,
+review flag and line. It deliberately does not sum totals across documents that
+may describe the same visit. Supplied audits must match the exact document and
+line evidence; omitted audits are generated with comparison unavailable. Queries
+and updates are scoped to the supplied owner ID. This is an internal backend
+library, not an authentication system: do not expose owner IDs, supplied audits,
+benchmark rates or outcome verification as trusted client inputs.
+
+```python
+from functionality.store_bill import NegotiationResult
+
+store.save_negotiation_result(
+    owner_id, case.id,
+    NegotiationResult(status='needs_review', summary='Provider requested an itemized bill.'),
+)
+```
+
+A `resolved` negotiation status requires `verified=True` from human oversight.
+Negotiation amounts are decimal strings; they are not automatically counted as
+savings. Calls, transcripts and authentication remain future integrations.
+The existing `/ocr` endpoint does not automatically persist results: add storage
+inside authenticated backend routes when the app/session layer is ready.
+SQLite stores extracted document text locally without application-level encryption;
+use synthetic documents during development. Database files are excluded from Git.
+Runtime tests for these modules and live Gemini/device integration are deferred.

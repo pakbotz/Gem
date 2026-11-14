@@ -1,0 +1,13 @@
+# Local Python/runtime files and credentials
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+# Local bill storage (may contain sensitive document text)
+data/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
