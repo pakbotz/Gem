@@ -161,7 +161,7 @@ const styles = StyleSheet.create({
   choiceIcon: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#F0EBFA' },
   choiceIconText: { fontSize: 23, color: '#5D3ED3' },
   choiceCopy: { flex: 1, gap: 4 },
-  choiceTitle: { fontSize: 16, fontWeight: '700', color: '#24232B' },
+  choiceTitle: { fontFamily: 'CanelaThin', fontSize: 18, color: '#24232B' },
   chevron: { fontSize: 27, color: '#716D79' },
   privacyNote: { marginTop: 4, fontSize: 12, lineHeight: 18, color: '#716D79' },
   tabBar: { minHeight: 62, paddingHorizontal: 18, paddingBottom: 4, flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#E1DCD5', backgroundColor: '#F8F6F2' },

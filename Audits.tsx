@@ -184,8 +184,8 @@ export function AuditDetailScreen({ audit, onBack }: { audit: AuditRecord; onBac
     </View>
 
     <View style={styles.moneyGrid}>
-      <MoneyCard label="Billed total" amount={audit.billedTotal} />
-      <MoneyCard label="Medicare-approved reference" amount={audit.medicareApproved} />
+      <MoneyCard label="Billed total" amount={audit.billedTotal} warm />
+      <MoneyCard label="Medicare-approved reference" amount={audit.medicareApproved} warm />
       <MoneyCard label="Potential savings" amount={audit.potentialSavings} emphasized />
     </View>
     <Text style={styles.disclaimer}>A reference comparison can help identify a question to ask. It is not a confirmed saving or the amount you owe.</Text>
@@ -249,8 +249,8 @@ export function AuditDetailScreen({ audit, onBack }: { audit: AuditRecord; onBac
   </Animated.View>;
 }
 
-function MoneyCard({ label, amount, emphasized = false }: { label: string; amount: number; emphasized?: boolean }) {
-  return <View style={[styles.moneyCard, emphasized && styles.moneyCardEmphasized]}>
+function MoneyCard({ label, amount, emphasized = false, warm = false }: { label: string; amount: number; emphasized?: boolean; warm?: boolean }) {
+  return <View style={[styles.moneyCard, warm && styles.moneyCardWarm, emphasized && styles.moneyCardEmphasized]}>
     <Text style={styles.moneyLabel}>{label}</Text>
     <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.moneyAmount, emphasized && styles.moneyAmountEmphasized]}>{money(amount)}</Text>
   </View>;
@@ -328,6 +328,7 @@ const styles = StyleSheet.create({
   detailSubheading: { fontSize: 13, lineHeight: 19, color: '#716D79' },
   moneyGrid: { flexDirection: 'row', gap: 8 },
   moneyCard: { flex: 1, minWidth: 0, minHeight: 94, padding: 10, justifyContent: 'space-between', borderRadius: 14, backgroundColor: '#FFFFFF' },
+  moneyCardWarm: { backgroundColor: '#FFFFFF' },
   moneyCardEmphasized: { backgroundColor: '#ECEBFA' },
   moneyLabel: { fontSize: 10, lineHeight: 14, color: '#716D79', fontWeight: '600' },
   moneyAmount: { fontSize: 17, lineHeight: 22, color: '#24232B', fontWeight: '700' },

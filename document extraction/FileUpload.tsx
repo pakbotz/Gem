@@ -289,7 +289,7 @@ export default function FileUpload(props: UploadProps) {
 export const styles = StyleSheet.create({
   container: { paddingHorizontal: 24, paddingTop: 4, paddingBottom: 48, gap: 16, backgroundColor: '#F8F6F2' },
   card: { padding: 18, borderWidth: 1, borderColor: '#E1DCD5', borderRadius: 18, backgroundColor: '#FFFFFF', gap: 12 },
-  title: { fontFamily: 'Canela-Light', fontSize: 25, lineHeight: 32, color: '#24232B' },
+  title: { fontFamily: 'CanelaThin', fontSize: 25, lineHeight: 32, color: '#24232B' },
   heading: { fontSize: 15, fontWeight: '600', color: '#24232B' },
   body: { fontSize: 14, lineHeight: 20, color: '#716D79' },
   source: { fontSize: 12, lineHeight: 18, color: '#716D79' },
