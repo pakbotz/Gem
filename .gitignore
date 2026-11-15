@@ -2,7 +2,17 @@ node_modules/
 .expo/
 .expo-shared/
 dist/
+coverage/
+# Local Python/runtime files and credentials
+.venv/
+__pycache__/
+*.py[cod]
 .env
 .env.*
 !.env.example
-coverage/
+# Local bill storage (may contain sensitive document text)
+data/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
