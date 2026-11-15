@@ -2,7 +2,7 @@
 
 Install: python3 -m pip install fastapi uvicorn python-multipart google-genai pillow pypdf
 Configure GEMINI_API_KEY on the server, never in the Expo app.
-Optionally set GEMINI_MODEL (default gemini-2.5-flash).
+Optionally set GEMINI_MODEL (default gemini-3.5-flash, with gemini-3.5-flash as fallback).
 Run from repository root:
     python3 -m uvicorn ocr:app --app-dir 'document extraction' --host 0.0.0.0 --port 8000
 For Expo web only, set ALLOWED_ORIGINS to comma-separated exact frontend origins.
@@ -24,6 +24,7 @@ from google.genai import types, errors
 import httpx
 from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
+from functionality.gemini import RETRYABLE, model_chain
 from functionality.models import BillingExtraction, ExtractedDocument, OCRResponse, LineItem
 from pypdf import PdfReader
 from starlette.concurrency import run_in_threadpool
@@ -52,6 +53,12 @@ zeros. Amount values are signed decimal strings with two fractional digits, no
 currency symbol or commas. Preserve the printed sign for adjustments; never infer
 whether an unsigned adjustment should be added or subtracted. Do not calculate
 missing amounts. Currency is an explicitly identifiable three-letter ISO code.
+Units are the printed quantity/units for the row as a positive integer; null if not
+printed. Codes keep any printed CPT/HCPCS modifiers after a hyphen (e.g. 71046-26).
+provider_phone is the number printed for billing or account questions, exactly as
+printed (prefer the billing/customer-service number over a main hospital number).
+provider_state is the two-letter US state of the provider's address. patient_name
+and account_number are the patient/guarantor name and account or statement number.
 Distinguish billed charges, adjustments, and patient responsibility. Summary totals
 are only explicitly labeled document totals, not a row amount or page subtotal.
 Do not count carried-forward summaries as service rows. If the document is not a
@@ -68,7 +75,8 @@ def review_extraction(data: BillingExtraction, page_count: int) -> BillingExtrac
         raise ValueError('Missing, duplicate or out-of-range pages')
     notes = data.review_notes
     fields = [(name, getattr(data, name)) for name in
-              ('provider_name', 'total_billed', 'total_adjustments', 'patient_responsibility', 'currency')]
+              ('provider_name', 'provider_phone', 'provider_state', 'patient_name', 'account_number',
+               'total_billed', 'total_adjustments', 'patient_responsibility', 'currency')]
     for index, item in enumerate(data.line_items, start=1):
         fields.extend((f'Line {index} {name}', getattr(item, name)) for name in LineItem.model_fields)
     normalize = lambda text: ' '.join(text.split())
@@ -93,8 +101,14 @@ def review_extraction(data: BillingExtraction, page_count: int) -> BillingExtrac
                     date.fromisoformat(field.value)
                 except ValueError:
                     reasons.append('Invalid or ambiguous service date.')
-            if name.endswith(' code') and not re.fullmatch(r'(?:\d{5}|[A-Z]\d{4}|\d{4}[A-Z])', field.value):
+            if name.endswith(' code') and not re.fullmatch(r'(?:\d{5}|[A-Z]\d{4}|\d{4}[A-Z])(?:-[A-Z0-9]{2})*', field.value):
                 reasons.append('Verify CPT/HCPCS code format, including any modifiers.')
+            if name.endswith(' units') and not re.fullmatch(r'[1-9]\d{0,3}', field.value):
+                reasons.append('Units must be a positive whole number.')
+            if name == 'provider_phone' and len(re.sub(r'\D', '', field.value).removeprefix('1')) != 10:
+                reasons.append('Verify the billing phone number.')
+            if name == 'provider_state' and not re.fullmatch(r'[A-Z]{2}', field.value):
+                reasons.append('State must be a two-letter code.')
             if name == 'currency' and not re.fullmatch(r'[A-Z]{3}', field.value):
                 reasons.append('Currency must be a three-letter code.')
         if reasons:
@@ -148,20 +162,29 @@ def extract(batch: list[tuple[str, bytes, str, int]]) -> OCRResponse:
         raise HTTPException(503, 'Extraction is not configured. Set GEMINI_API_KEY on the server.')
     try:
         with genai.Client(api_key=api_key, http_options=types.HttpOptions(
-            timeout=40_000, retry_options=types.HttpRetryOptions(attempts=1)
+            timeout=90_000, retry_options=types.HttpRetryOptions(attempts=1)
         )) as client:
             documents = []
             for index, (filename, content, mime, page_count) in enumerate(batch, start=1):
-                response = client.models.generate_content(
-                    model=os.getenv('GEMINI_MODEL', 'gemini-2.5-flash'),
-                    contents=[types.Part.from_bytes(data=content, mime_type=mime)],
-                    config=types.GenerateContentConfig(
-                        system_instruction=EXTRACTION_PROMPT,
-                        temperature=0,
-                        response_mime_type='application/json',
-                        response_schema=BillingExtraction,
-                    ),
-                )
+                models = model_chain(os.getenv('GEMINI_MODEL'))
+                for model in models:
+                    try:
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=[types.Part.from_bytes(data=content, mime_type=mime)],
+                            config=types.GenerateContentConfig(
+                                system_instruction=EXTRACTION_PROMPT,
+                                temperature=0,
+                                response_mime_type='application/json',
+                                # JSON Schema mode supports additionalProperties from our strict models.
+                                response_json_schema=BillingExtraction.model_json_schema(),
+                            ),
+                        )
+                        break
+                    except (errors.APIError, httpx.TimeoutException) as exc:
+                        # Fall back when the configured model is overloaded or too slow.
+                        if model == models[-1] or (isinstance(exc, errors.APIError) and exc.code not in RETRYABLE):
+                            raise
                 if (not response.candidates or
                         response.candidates[0].finish_reason != types.FinishReason.STOP or
                         not response.text):
@@ -174,7 +197,9 @@ def extract(batch: list[tuple[str, bytes, str, int]]) -> OCRResponse:
         raise HTTPException(502, 'Gemini returned incomplete or invalid extraction data. Try a clearer scan or fewer pages.') from None
     except errors.APIError as exc:
         if exc.code == 429:
-            raise HTTPException(429, 'Gemini quota or rate limit reached. Please retry later.') from None
+            raise HTTPException(429, 'Gemini is busy or this API key hit its rate limit. Wait a minute and try again.') from None
+        if exc.code in (500, 503, 504):
+            raise HTTPException(503, 'Gemini is busy right now. Wait a moment and try again.') from None
         raise HTTPException(502, 'Gemini could not extract the documents. Check the server API key and model configuration, or retry.') from None
     except httpx.TimeoutException:
         raise HTTPException(504, 'Gemini extraction timed out. Try fewer pages.') from None

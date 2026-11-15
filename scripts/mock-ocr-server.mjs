@@ -16,9 +16,13 @@ const demoResult = {
     source_index: 1,
     pages: [{
       page_number: 1,
-      text: 'SAMPLE MEDICAL CENTER\nOffice visit\nDate of service: 2026-10-14\nCPT 99213\nTotal charges: $1,055.00\nPatient responsibility: $211.00',
+      text: 'SAMPLE MEDICAL CENTER\nLos Angeles, CA\nBilling questions: (800) 555-0199\nPatient: Pat Sample\nAccount: A-1001\nUnits: 1\nOffice visit\nDate of service: 2026-10-14\nCPT 99213\nTotal charges: $1,055.00\nPatient responsibility: $211.00',
     }],
     provider_name: field('Sample Medical Center', 'SAMPLE MEDICAL CENTER'),
+    provider_phone: field('(800) 555-0199', 'Billing questions: (800) 555-0199'),
+    provider_state: field('CA', 'Los Angeles, CA'),
+    patient_name: field('Pat Sample', 'Patient: Pat Sample'),
+    account_number: field('A-1001', 'Account: A-1001'),
     total_billed: field('1055.00', 'Total charges: $1,055.00'),
     total_adjustments: field(null, null),
     patient_responsibility: field('211.00', 'Patient responsibility: $211.00'),
@@ -27,6 +31,7 @@ const demoResult = {
       service_date: field('2026-10-14', 'Date of service: 2026-10-14'),
       code: field('99213', 'CPT 99213'),
       description: field('Office visit', 'Office visit'),
+      units: field('1', 'Units: 1'),
       charged_amount: field('1055.00', 'Total charges: $1,055.00'),
       adjustments: field(null, null),
       patient_responsibility: field('211.00', 'Patient responsibility: $211.00'),
@@ -57,6 +62,6 @@ const server = http.createServer((request, response) => {
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`BillBacked demo API listening on http://0.0.0.0:${port}/ocr`);
+  console.log(`Gem demo API listening on http://0.0.0.0:${port}/ocr`);
   console.log('Demo response only: uploaded document bytes are ignored and not stored.');
 });

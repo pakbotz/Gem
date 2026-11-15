@@ -9,22 +9,23 @@ export type BillingField = {
   source_text: string | null; review_reason: string | null;
 };
 export type LineItem = {
-  service_date: BillingField; code: BillingField; description: BillingField;
+  service_date: BillingField; code: BillingField; description: BillingField; units: BillingField;
   charged_amount: BillingField; adjustments: BillingField; patient_responsibility: BillingField;
 };
 export type OCRResult = {
   documents: {
     source_file: string; source_index: number;
     pages: { page_number: number; text: string }[];
-    provider_name: BillingField; total_billed: BillingField; total_adjustments: BillingField;
+    provider_name: BillingField; provider_phone: BillingField; provider_state: BillingField;
+    patient_name: BillingField; account_number: BillingField; total_billed: BillingField; total_adjustments: BillingField;
     patient_responsibility: BillingField; currency: BillingField;
     line_items: LineItem[]; review_notes: string[];
   }[];
   requires_review: boolean;
   demo_mode?: boolean;
 };
-const summaryFields = ['provider_name', 'total_billed', 'total_adjustments', 'patient_responsibility', 'currency'] as const;
-const lineFields = ['service_date', 'code', 'description', 'charged_amount', 'adjustments', 'patient_responsibility'] as const;
+const summaryFields = ['provider_name', 'provider_phone', 'provider_state', 'patient_name', 'account_number', 'total_billed', 'total_adjustments', 'patient_responsibility', 'currency'] as const;
+const lineFields = ['service_date', 'code', 'description', 'units', 'charged_amount', 'adjustments', 'patient_responsibility'] as const;
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -32,7 +33,7 @@ function isField(value: unknown): value is BillingField {
   return isRecord(value) && ['value', 'source_text', 'review_reason'].every(k => value[k] === null || typeof value[k] === 'string')
     && (value.page_number === null || (typeof value.page_number === 'number' && Number.isInteger(value.page_number) && value.page_number > 0));
 }
-function isResult(value: unknown): value is OCRResult {
+export function isResult(value: unknown): value is OCRResult {
   return isRecord(value) && value.requires_review === true && Array.isArray(value.documents) && value.documents.length > 0
     && value.documents.every(d => isRecord(d) && typeof d.source_file === 'string' && Number.isInteger(d.source_index)
       && summaryFields.every(k => isField(d[k]))
@@ -59,9 +60,14 @@ function FieldEditor({ label, field, onChange, keyboardType = 'default' }: {
     {field.review_reason && <Text style={styles.error}>Review: {field.review_reason}</Text>}
   </View>;
 }
-export type UploadProps = { endpoint: string; onComplete?: (result: OCRResult) => void };
+export type UploadProps = {
+  endpoint: string;
+  onComplete?: (result: OCRResult) => void;
+  /** Called with the user-corrected extraction when they choose to check the bill. */
+  onContinue?: (result: OCRResult) => void;
+};
 export const MAX_FILES = 10;
-const MAX_BYTES = 10 * 1024 * 1024;
+export const MAX_BYTES = 10 * 1024 * 1024;
 
 export function ActionButton({ title, onPress, disabled = false, variant = 'primary' }: {
   title: string; onPress: () => void; disabled?: boolean; variant?: 'primary' | 'secondary' | 'text';
@@ -88,7 +94,7 @@ export function ActionButton({ title, onPress, disabled = false, variant = 'prim
  * endpoint is the full URL, e.g. http://YOUR_COMPUTER_LAN_IP:8000/ocr.
  * Use HTTPS when deploying. No Google credentials belong in this component.
  */
-export function UploadReview({ files, setFiles, endpoint, onComplete, children, selectionBusy = false, onRetake }: UploadProps & {
+export function UploadReview({ files, setFiles, endpoint, onComplete, onContinue, children, selectionBusy = false, onRetake }: UploadProps & {
   files: DocumentFile[];
   setFiles: (files: DocumentFile[]) => void;
   children: (busy: boolean) => React.ReactNode;
@@ -193,6 +199,10 @@ export function UploadReview({ files, setFiles, endpoint, onComplete, children, 
       <Text style={styles.heading}>{doc.source_index}. {doc.source_file}</Text>
       <Text style={styles.body}>{result.demo_mode ? 'Use this sample response to try editing extracted fields.' : 'These are details read from your document, not confirmed billing findings. You can correct them before the next step.'}</Text>
       <FieldEditor label="Provider" field={doc.provider_name} onChange={value => updateSummaryField(setResult, index, 'provider_name', value)} />
+      <FieldEditor label="Billing phone" field={doc.provider_phone} onChange={value => updateSummaryField(setResult, index, 'provider_phone', value)} />
+      <FieldEditor label="State" field={doc.provider_state} onChange={value => updateSummaryField(setResult, index, 'provider_state', value)} />
+      <FieldEditor label="Patient" field={doc.patient_name} onChange={value => updateSummaryField(setResult, index, 'patient_name', value)} />
+      <FieldEditor label="Account number" field={doc.account_number} onChange={value => updateSummaryField(setResult, index, 'account_number', value)} />
       <FieldEditor label="Currency" field={doc.currency} onChange={value => updateSummaryField(setResult, index, 'currency', value)} />
       <FieldEditor label="Total billed" field={doc.total_billed} keyboardType="decimal-pad" onChange={value => updateSummaryField(setResult, index, 'total_billed', value)} />
       <FieldEditor label="Total adjustments" field={doc.total_adjustments} keyboardType="decimal-pad" onChange={value => updateSummaryField(setResult, index, 'total_adjustments', value)} />
@@ -203,6 +213,7 @@ export function UploadReview({ files, setFiles, endpoint, onComplete, children, 
         <FieldEditor label="Service date" field={item.service_date} onChange={value => updateLineField(setResult, index, i, 'service_date', value)} />
         <FieldEditor label="CPT/HCPCS code" field={item.code} onChange={value => updateLineField(setResult, index, i, 'code', value)} />
         <FieldEditor label="Description" field={item.description} onChange={value => updateLineField(setResult, index, i, 'description', value)} />
+        <FieldEditor label="Units" field={item.units} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'units', value)} />
         <FieldEditor label="Charged amount" field={item.charged_amount} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'charged_amount', value)} />
         <FieldEditor label="Adjustments" field={item.adjustments} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'adjustments', value)} />
         <FieldEditor label="Patient responsibility" field={item.patient_responsibility} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'patient_responsibility', value)} />
@@ -214,23 +225,29 @@ export function UploadReview({ files, setFiles, endpoint, onComplete, children, 
       </View>)}
       <View style={styles.noteCard}>
         <Text style={styles.heading}>What happens next</Text>
-        <Text style={styles.source}>A Medicare reference can help flag a charge for review. It is not automatically what you owe or proof of an overcharge. Audit comparison and saved corrections are not connected in this upload integration yet.</Text>
+        <Text style={styles.source}>Gem compares each charge with Medicare rates, flags duplicates and overcharges, and can call the hospital to dispute them after you approve.</Text>
       </View>
     </View>)}
+    {result && onContinue && <ActionButton title="Check this bill for overcharges" disabled={busy} onPress={() => onContinue(result)} />}
   </ScrollView>;
+}
+
+function corrected(field: BillingField, value: string): BillingField {
+  if (!value) return { ...field, value: null };
+  return { value, page_number: field.page_number ?? 1, source_text: field.source_text ?? 'Entered by user', review_reason: null };
 }
 
 function updateSummaryField(
   setResult: React.Dispatch<React.SetStateAction<OCRResult | null>>,
   documentIndex: number,
-  key: 'provider_name' | 'total_billed' | 'total_adjustments' | 'patient_responsibility' | 'currency',
+  key: typeof summaryFields[number],
   value: string,
 ) {
   setResult(current => {
     if (!current) return current;
     const documents = [...current.documents];
     const document = { ...documents[documentIndex] };
-    document[key] = { ...document[key], value: value || null };
+    document[key] = corrected(document[key], value);
     documents[documentIndex] = document;
     return { ...current, documents };
   });
@@ -248,7 +265,7 @@ function updateLineField(
     const documents = [...current.documents];
     const document = { ...documents[documentIndex], line_items: [...documents[documentIndex].line_items] };
     const line = { ...document.line_items[lineIndex] };
-    line[key] = { ...line[key], value: value || null };
+    line[key] = corrected(line[key], value);
     document.line_items[lineIndex] = line;
     documents[documentIndex] = document;
     return { ...current, documents };

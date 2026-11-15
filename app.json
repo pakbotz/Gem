@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "BillBacked",
-    "slug": "billbacked-mobile",
+    "name": "Gem",
+    "slug": "gem",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -9,7 +9,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow BillBacked to scan your medical documents.",
+          "cameraPermission": "Allow Gem to scan your medical documents.",
           "recordAudioAndroid": false
         }
       ]

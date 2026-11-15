@@ -1,5 +1,5 @@
 {
-  "name": "billbacked-mobile",
+  "name": "gem-mobile",
   "version": "1.0.0",
   "private": true,
   "main": "expo/AppEntry",
@@ -8,7 +8,8 @@
     "demo:api": "node scripts/mock-ocr-server.mjs",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "server": ".venv/bin/python -m uvicorn functionality.api:app --env-file .env --host 0.0.0.0 --port 8000"
   },
   "dependencies": {
     "expo": "~58.0.0",

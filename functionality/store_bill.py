@@ -17,6 +17,7 @@ from uuid import uuid4
 from pydantic import Field
 from functionality.comparision import BillAudit, analyze_bill
 from functionality.models import OCRResponse, StrictModel
+from functionality.review import ReviewReport
 
 
 class NegotiationResult(StrictModel):
@@ -33,6 +34,7 @@ class BillView(StrictModel):
     extraction: OCRResponse
     audits: list[BillAudit]
     negotiation: NegotiationResult = Field(default_factory=NegotiationResult)
+    review: ReviewReport | None = None
 
 
 class BillStore:
@@ -45,6 +47,10 @@ class BillStore:
                 created_at TEXT NOT NULL, payload TEXT NOT NULL
             )''')
             connection.execute('CREATE INDEX IF NOT EXISTS bills_owner_created ON bills(owner_id, created_at)')
+            connection.execute('''CREATE TABLE IF NOT EXISTS call_attempts (
+                bill_id TEXT NOT NULL, owner_id TEXT NOT NULL, review_id TEXT NOT NULL,
+                payload TEXT NOT NULL, PRIMARY KEY (bill_id, review_id)
+            )''')
 
     @contextmanager
     def _connect(self):
@@ -130,3 +136,66 @@ class BillStore:
             connection.execute('UPDATE bills SET payload = ? WHERE owner_id = ? AND id = ?',
                                (bill.model_dump_json(), owner_id, bill_id))
             return bill
+
+    def save_review(self, owner_id: str, bill_id: str, report: ReviewReport,
+                    *, expected_updated_at: str) -> BillView:
+        """Backend-generated reports only. Prevent overwriting concurrent case updates."""
+        self._owner(owner_id)
+        report = ReviewReport.model_validate(report).model_copy(deep=True)
+        with self._connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT payload FROM bills WHERE owner_id = ? AND id = ?',
+                                     (owner_id, bill_id)).fetchone()
+            if row is None:
+                raise LookupError('Bill not found')
+            bill = BillView.model_validate_json(row[0])
+            if bill.updated_at != expected_updated_at:
+                raise ValueError('Bill changed during review; retry')
+            # Reuse the storage evidence checks before accepting the report snapshot.
+            if len(report.audits) != len(bill.extraction.documents):
+                raise ValueError('Review document count mismatch')
+            for doc, audit in zip(bill.extraction.documents, report.audits):
+                if (doc.source_index, doc.source_file) != (audit.source_index, audit.source_file):
+                    raise ValueError('Review source mismatch')
+                evidence = [{name: getattr(item, name) for name in type(item).model_fields} for item in doc.line_items]
+                if [r.line_number for r in audit.discrepancies] != list(range(1, len(evidence) + 1)) or [r.evidence for r in audit.discrepancies] != evidence:
+                    raise ValueError('Review evidence mismatch')
+            bill.review = report
+            bill.audits = report.audits
+            bill.updated_at = datetime.now(timezone.utc).isoformat()
+            connection.execute('UPDATE bills SET payload = ? WHERE owner_id = ? AND id = ?',
+                               (bill.model_dump_json(), owner_id, bill_id))
+            return bill
+
+    def claim_call(self, owner_id: str, bill_id: str, review_id: str, payload: str):
+        """One dispatch attempt per report, including uncertain network outcomes."""
+        self._owner(owner_id)
+        with self._connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT payload FROM bills WHERE owner_id = ? AND id = ?',
+                                     (owner_id, bill_id)).fetchone()
+            if row is None:
+                raise LookupError('Bill not found')
+            bill = BillView.model_validate_json(row[0])
+            if bill.review is None or bill.review.id != review_id:
+                raise ValueError('Call plan is stale; prepare and review a new plan')
+            try:
+                connection.execute('INSERT INTO call_attempts VALUES (?, ?, ?, ?)',
+                                   (bill_id, owner_id, review_id, payload))
+            except sqlite3.IntegrityError:
+                raise ValueError('A call was already attempted for this report; inspect its status before retrying') from None
+
+    def get_call(self, owner_id: str, bill_id: str, review_id: str) -> str | None:
+        self._owner(owner_id)
+        with self._connect() as connection:
+            row = connection.execute('SELECT payload FROM call_attempts WHERE owner_id = ? AND bill_id = ? AND review_id = ?',
+                                     (owner_id, bill_id, review_id)).fetchone()
+        return row[0] if row else None
+
+    def update_call(self, owner_id: str, bill_id: str, review_id: str, payload: str):
+        self._owner(owner_id)
+        with self._connect() as connection:
+            result = connection.execute('UPDATE call_attempts SET payload = ? WHERE owner_id = ? AND bill_id = ? AND review_id = ?',
+                                        (payload, owner_id, bill_id, review_id))
+            if result.rowcount != 1:
+                raise LookupError('Call not found')

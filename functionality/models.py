@@ -22,6 +22,7 @@ class LineItem(StrictModel):
     service_date: BillingField
     code: BillingField
     description: BillingField
+    units: BillingField
     charged_amount: BillingField
     adjustments: BillingField
     patient_responsibility: BillingField
@@ -30,6 +31,10 @@ class LineItem(StrictModel):
 class BillingExtraction(StrictModel):
     pages: list[PageText]
     provider_name: BillingField
+    provider_phone: BillingField
+    provider_state: BillingField
+    patient_name: BillingField
+    account_number: BillingField
     total_billed: BillingField
     total_adjustments: BillingField
     patient_responsibility: BillingField
@@ -46,5 +51,4 @@ class ExtractedDocument(BillingExtraction):
 class OCRResponse(StrictModel):
     documents: list[ExtractedDocument]
     requires_review: bool = True
-
-
+    demo_mode: bool = False  # Set by scripts/mock-ocr-server.mjs sample responses.

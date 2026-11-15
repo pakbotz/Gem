@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Alert, Animated, Easing, Image, Linking, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Svg, { Circle, Path, Text as SvgText } from 'react-native-svg';
+import { colors, radius, type, ui } from './theme';
 
 export type AuditStatus = 'green' | 'yellow' | 'red';
 
@@ -9,7 +10,8 @@ export type AuditCharge = {
   description: string;
   code: string;
   billedAmount: number;
-  medicareAmount: number;
+  /** null when the code has no Medicare fee schedule rate (labs, drugs, facility fees). */
+  medicareAmount: number | null;
   note: string;
 };
 
@@ -37,6 +39,10 @@ export type AuditRecord = {
   progress: { title: string; description: string; detail?: string }[];
   outreachSummary?: string;
   documents: AuditDocument[];
+  /** Backend case ID for real bill checks. */
+  caseId?: string;
+  /** True when the bill has disputable charges and the call is not finished. */
+  canContinue?: boolean;
 };
 
 const mariaCharges: AuditCharge[] = [
@@ -137,7 +143,7 @@ function MetricTile({ icon, title, value, caption }: { icon: 'dollar' | 'flag' |
 }
 
 function MetricIcon({ kind }: { kind: 'dollar' | 'flag' | 'calendar' | 'hash' }) {
-  const color = '#5D3ED3';
+  const color = colors.purple;
   return <Svg width={22} height={22} viewBox="0 0 24 24" accessible={false}>
     {kind === 'dollar' && <SvgText x="12" y="19" textAnchor="middle" fontSize="19" fontWeight="700" fill={color}>$</SvgText>}
     {kind === 'flag' && <Path d="M5 21V4m1 1h12l-2.4 4L18 13H6" fill="none" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />}
@@ -149,7 +155,7 @@ function MetricIcon({ kind }: { kind: 'dollar' | 'flag' | 'calendar' | 'hash' })
 }
 
 function StatusIcon({ status, size = 20 }: { status: AuditStatus; size?: number }) {
-  const color = status === 'green' ? '#2F8A57' : status === 'yellow' ? '#9A6700' : '#C83C3C';
+  const color = status === 'green' ? colors.green : status === 'yellow' ? colors.amber : colors.red;
   return <Svg width={size} height={size} viewBox="0 0 24 24" accessible={false}>
     <Circle cx={12} cy={12} r={9.25} fill="transparent" stroke={color} strokeWidth={1.8} />
     {status === 'green' && <Path d="m7.5 12.2 3 3.05 6-6.35" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />}
@@ -158,7 +164,7 @@ function StatusIcon({ status, size = 20 }: { status: AuditStatus; size?: number 
   </Svg>;
 }
 
-export function AuditDetailScreen({ audit, onBack }: { audit: AuditRecord; onBack: () => void }) {
+export function AuditDetailScreen({ audit, onBack, onContinue }: { audit: AuditRecord; onBack: () => void; onContinue?: () => void }) {
   const { width } = useWindowDimensions();
   const slideX = useRef(new Animated.Value(width)).current;
 
@@ -188,7 +194,10 @@ export function AuditDetailScreen({ audit, onBack }: { audit: AuditRecord; onBac
       <MoneyCard label="Medicare-approved reference" amount={audit.medicareApproved} warm />
       <MoneyCard label="Potential savings" amount={audit.potentialSavings} emphasized />
     </View>
-    <Text style={styles.disclaimer}>A reference comparison can help identify a question to ask. It is not a confirmed saving or the amount you owe.</Text>
+    <Text style={styles.disclaimer}>Potential savings is the amount Gem disputes: duplicates plus charges above the fair price. The hospital decides whether to reduce them.</Text>
+    {audit.canContinue && onContinue && <Pressable accessibilityRole="button" onPress={onContinue} style={({ pressed }) => [styles.continueButton, pressed && styles.pressed]}>
+      <Text style={styles.continueButtonText}>{audit.statusLabel === 'Calling hospital' ? 'View call status' : 'Dispute these charges'}</Text>
+    </Pressable>}
 
     <SectionTitle title="Charges" subtitle={`${audit.charges.length} line items · ${audit.flaggedCount} to review`} />
     <View style={styles.chargeList}>
@@ -264,7 +273,7 @@ function SectionTitle({ title, subtitle }: { title: string; subtitle?: string })
 }
 
 function ChargeCard({ charge }: { charge: AuditCharge }) {
-  const difference = charge.billedAmount - charge.medicareAmount;
+  const difference = charge.medicareAmount === null ? null : charge.billedAmount - charge.medicareAmount;
   return <View style={styles.chargeCard}>
     <View style={styles.chargeTopRow}>
       <View style={styles.chargeMain}>
@@ -275,9 +284,9 @@ function ChargeCard({ charge }: { charge: AuditCharge }) {
     </View>
     <View style={styles.chargeBottomRow}>
       <Text style={styles.chargeDifference}>{charge.note}</Text>
-      <Text style={styles.chargeReference}>{money(charge.medicareAmount)}{ '\n' }Medicare reference</Text>
+      <Text style={styles.chargeReference}>{charge.medicareAmount === null ? 'No Medicare\nrate' : <><Text style={styles.chargeReferenceAmount}>{money(charge.medicareAmount)}</Text>{'\n'}Medicare reference</>}</Text>
     </View>
-    <Text style={styles.chargeDiffAmount}>{money(difference)} difference to review</Text>
+    {difference !== null && <Text style={styles.chargeDiffAmount}>{money(difference)} above the Medicare reference</Text>}
   </View>;
 }
 
@@ -298,81 +307,84 @@ function moneyWhole(value: number) {
 }
 
 const styles = StyleSheet.create({
-  listScreen: { flex: 1, marginHorizontal: 8, marginBottom: 8, borderRadius: 12, backgroundColor: '#F8F6F2' },
+  listScreen: { flex: 1, marginHorizontal: 8, marginBottom: 8, borderRadius: 12, backgroundColor: colors.background },
   listContent: { flexGrow: 1, paddingHorizontal: 16, paddingTop: 28, paddingBottom: 28 },
-  pageTitle: { marginBottom: 24, fontFamily: 'CanelaThin', fontSize: 38, lineHeight: 46, color: '#090909', textAlign: 'center' },
+  pageTitle: { ...type.display, marginBottom: 24, textAlign: 'center' },
   metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 12 },
-  metricTile: { width: '48.5%', minHeight: 122, padding: 12, justifyContent: 'space-between', borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EEEAE4' },
+  metricTile: { width: '48.5%', minHeight: 122, padding: 12, justifyContent: 'space-between', borderRadius: radius.row, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   metricHeading: { minHeight: 24, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  metricTitle: { flex: 1, fontFamily: 'CanelaThin', fontSize: 14, lineHeight: 18, color: '#24232B' },
-  metricNumber: { fontSize: 28, lineHeight: 34, fontWeight: '700', color: '#24232B', textAlign: 'center' },
-  metricCaption: { fontSize: 10, lineHeight: 14, fontWeight: '500', color: '#716D79', textAlign: 'center' },
+  metricTitle: { ...type.label, flex: 1, color: colors.ink },
+  metricNumber: { fontSize: 28, lineHeight: 34, fontWeight: '800', color: colors.ink, textAlign: 'center' },
+  metricCaption: { fontSize: 10, lineHeight: 14, fontWeight: '500', color: colors.muted, textAlign: 'center' },
   auditRows: { marginTop: 40, gap: 4 },
   auditRow: { minHeight: 46, flexDirection: 'row', alignItems: 'center', paddingVertical: 4, gap: 10 },
   documentIcon: { width: 34, height: 38 },
   auditNameBlock: { flex: 1, minWidth: 0 },
-  auditName: { fontFamily: 'CanelaThin', fontSize: 17, color: '#24232B' },
-  auditStatusText: { marginTop: 2, fontSize: 10, fontWeight: '600', color: '#4D4953' },
-  auditDate: { fontSize: 12, fontWeight: '700', color: '#24232B' },
-  rowChevron: { color: '#716D79', fontSize: 21, marginLeft: -6 },
-  referenceNote: { marginTop: 'auto', paddingTop: 26, fontSize: 11, lineHeight: 16, color: '#716D79' },
-  emptyText: { paddingVertical: 16, fontSize: 14, lineHeight: 20, color: '#716D79' },
+  auditName: type.bodyStrong,
+  auditStatusText: { marginTop: 2, fontSize: 10, fontWeight: '600', color: colors.body },
+  auditDate: { fontSize: 12, fontWeight: '700', color: colors.ink },
+  rowChevron: { color: colors.muted, fontSize: 21, marginLeft: -6 },
+  referenceNote: { marginTop: 'auto', paddingTop: 26, fontSize: 11, lineHeight: 16, color: colors.muted },
+  emptyText: { paddingVertical: 16, fontSize: 14, lineHeight: 20, color: colors.muted },
   pressed: { opacity: 0.7 },
-  detailScreen: { flex: 1, backgroundColor: '#F8F6F2' },
-  detailTransition: { flex: 1, overflow: 'hidden', backgroundColor: '#F8F6F2' },
+  detailScreen: { flex: 1, backgroundColor: colors.background },
+  detailTransition: { flex: 1, overflow: 'hidden', backgroundColor: colors.background },
   detailContent: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 36, gap: 16 },
   detailBack: { minHeight: 40, justifyContent: 'center', alignSelf: 'flex-start', paddingRight: 10 },
-  detailBackText: { color: '#5D3ED3', fontSize: 14, fontWeight: '700' },
+  detailBackText: type.link,
   detailHeading: { gap: 4 },
-  detailTitle: { fontFamily: 'CanelaThin', fontSize: 34, lineHeight: 40, color: '#24232B' },
-  detailSubheading: { fontSize: 13, lineHeight: 19, color: '#716D79' },
+  detailTitle: type.display,
+  detailSubheading: { fontSize: 13, lineHeight: 19, color: colors.muted },
   moneyGrid: { flexDirection: 'row', gap: 8 },
-  moneyCard: { flex: 1, minWidth: 0, minHeight: 94, padding: 10, justifyContent: 'space-between', borderRadius: 14, backgroundColor: '#FFFFFF' },
-  moneyCardWarm: { backgroundColor: '#FFFFFF' },
-  moneyCardEmphasized: { backgroundColor: '#ECEBFA' },
-  moneyLabel: { fontSize: 10, lineHeight: 14, color: '#716D79', fontWeight: '600' },
-  moneyAmount: { fontSize: 17, lineHeight: 22, color: '#24232B', fontWeight: '700' },
-  moneyAmountEmphasized: { color: '#5057BD' },
-  disclaimer: { marginTop: -8, fontSize: 11, lineHeight: 16, color: '#716D79' },
+  moneyCard: { flex: 1, minWidth: 0, minHeight: 94, padding: 10, justifyContent: 'space-between', borderRadius: 14, backgroundColor: colors.card },
+  moneyCardWarm: { backgroundColor: colors.card },
+  moneyCardEmphasized: { backgroundColor: colors.lilac },
+  moneyLabel: { fontSize: 10, lineHeight: 14, color: colors.muted, fontWeight: '600' },
+  moneyAmount: { fontSize: 19, lineHeight: 24, color: colors.ink, fontWeight: '800' },
+  moneyAmountEmphasized: { color: colors.purple },
+  disclaimer: { marginTop: -8, fontSize: 11, lineHeight: 16, color: colors.muted },
   sectionHeading: { marginTop: 4, gap: 3 },
-  sectionTitle: { fontFamily: 'CanelaThin', fontSize: 25, lineHeight: 32, color: '#24232B' },
-  sectionSubtitle: { fontSize: 12, lineHeight: 17, color: '#716D79' },
+  sectionTitle: type.heading,
+  sectionSubtitle: { fontSize: 12, lineHeight: 17, color: colors.muted },
   chargeList: { gap: 10 },
-  chargeCard: { padding: 14, gap: 8, borderRadius: 16, backgroundColor: '#FFFFFF' },
+  chargeCard: { padding: 14, gap: 8, borderRadius: radius.card, backgroundColor: colors.card },
   chargeTopRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   chargeMain: { flex: 1, gap: 3 },
-  chargeName: { fontSize: 14, lineHeight: 19, fontWeight: '700', color: '#24232B' },
-  chargeCode: { fontSize: 12, color: '#8C8791' },
-  chargeBilled: { fontSize: 13, fontWeight: '700', color: '#24232B' },
+  chargeName: { fontSize: 14, lineHeight: 19, fontWeight: '700', color: colors.ink },
+  chargeCode: { fontSize: 12, color: colors.muted },
+  chargeBilled: { fontSize: 16, fontWeight: '800', color: colors.ink },
   chargeBottomRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
-  chargeDifference: { flex: 1, fontSize: 12, lineHeight: 17, color: '#B85B63', fontWeight: '600' },
-  chargeReference: { minWidth: 92, fontSize: 10, lineHeight: 14, color: '#8C8791', textAlign: 'right' },
-  chargeDiffAmount: { fontSize: 11, color: '#716D79' },
-  progressCard: { padding: 16, borderRadius: 18, backgroundColor: '#FFFFFF' },
+  chargeDifference: { flex: 1, fontSize: 12, lineHeight: 17, color: colors.red, fontWeight: '600' },
+  chargeReference: { minWidth: 92, fontSize: 10, lineHeight: 14, color: colors.muted, textAlign: 'right' },
+  chargeReferenceAmount: { fontSize: 14, fontWeight: '800', color: colors.ink },
+  chargeDiffAmount: { fontSize: 13, fontWeight: '800', color: colors.red },
+  progressCard: { padding: 16, borderRadius: radius.card, backgroundColor: colors.card },
   progressRow: { minHeight: 75, flexDirection: 'row', gap: 12 },
   progressRail: { width: 30, alignItems: 'center' },
-  progressDot: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#F0EEF5' },
-  progressDotDone: { backgroundColor: '#5D3ED3' },
-  progressDotCurrent: { borderWidth: 1, borderColor: '#5D3ED3', backgroundColor: '#FFFFFF' },
-  progressDotText: { fontSize: 11, fontWeight: '700', color: '#716D79' },
+  progressDot: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: colors.track },
+  progressDotDone: { backgroundColor: colors.purple },
+  progressDotCurrent: { borderWidth: 1, borderColor: colors.purple, backgroundColor: colors.card },
+  progressDotText: { fontSize: 11, fontWeight: '700', color: colors.muted },
   progressDotTextDone: { color: '#FFFFFF' },
-  progressLine: { flex: 1, width: 1, minHeight: 38, backgroundColor: '#C9BEEB' },
+  progressLine: { flex: 1, width: 1, minHeight: 38, backgroundColor: colors.lilacLine },
   progressCopy: { flex: 1, paddingBottom: 16 },
-  progressTitle: { fontSize: 14, lineHeight: 19, fontWeight: '700', color: '#24232B' },
-  progressDescription: { marginTop: 2, fontSize: 12, lineHeight: 17, color: '#716D79' },
-  progressDetail: { marginTop: 5, fontSize: 11, lineHeight: 16, color: '#8C8791' },
-  transcriptCard: { marginTop: 10, padding: 13, borderRadius: 12, backgroundColor: '#F5F4F7' },
-  transcriptLabel: { marginBottom: 5, fontSize: 10, letterSpacing: 0.5, fontWeight: '700', color: '#5D3ED3' },
-  transcriptText: { fontSize: 12, lineHeight: 18, color: '#4D4953' },
+  progressTitle: { fontSize: 14, lineHeight: 19, fontWeight: '700', color: colors.ink },
+  progressDescription: { marginTop: 2, fontSize: 12, lineHeight: 17, color: colors.muted },
+  progressDetail: { marginTop: 5, fontSize: 11, lineHeight: 16, color: colors.muted },
+  transcriptCard: { marginTop: 10, padding: 13, borderRadius: 12, backgroundColor: colors.track },
+  transcriptLabel: { marginBottom: 5, fontSize: 10, letterSpacing: 0.5, fontWeight: '700', color: colors.purple },
+  transcriptText: { fontSize: 12, lineHeight: 18, color: colors.body },
   documentList: { gap: 9 },
-  uploadedDocument: { minHeight: 66, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, backgroundColor: '#FFFFFF' },
+  uploadedDocument: { minHeight: 66, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, backgroundColor: colors.card },
   uploadedDocumentIcon: { width: 34, height: 38 },
   documentCopy: { flex: 1, minWidth: 0, gap: 4 },
-  documentName: { fontSize: 13, fontWeight: '700', color: '#24232B' },
-  documentMeta: { fontSize: 11, color: '#8C8791' },
-  documentOpen: { fontSize: 12, fontWeight: '700', color: '#5D3ED3' },
-  resultCard: { padding: 15, flexDirection: 'row', alignItems: 'flex-start', gap: 12, borderRadius: 16, backgroundColor: '#FFFFFF' },
+  documentName: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  documentMeta: { fontSize: 11, color: colors.muted },
+  documentOpen: { fontSize: 12, fontWeight: '700', color: colors.purple },
+  continueButton: ui.button,
+  continueButtonText: ui.buttonText,
+  resultCard: { padding: 15, flexDirection: 'row', alignItems: 'flex-start', gap: 12, borderRadius: radius.card, backgroundColor: colors.card },
   resultCopy: { flex: 1, gap: 5 },
-  resultStatus: { fontSize: 13, fontWeight: '700', color: '#24232B' },
-  resultSentence: { fontSize: 13, lineHeight: 19, color: '#4D4953' },
+  resultStatus: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  resultSentence: { fontSize: 13, lineHeight: 19, color: colors.body },
 });

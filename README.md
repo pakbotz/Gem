@@ -1,9 +1,14 @@
-# BillBacked
+# Gem
 
-Expo frontend and FastAPI extraction service for a mobile medical-bill review flow.
-The frontend includes a gradient sign-up/login landing screen, a local demo auth
+Gem scans a medical bill, compares each charge with Medicare (CMS)
+rates, tells the patient about duplicate and above-fair-price charges, and calls the
+hospital billing office to dispute them.
+
+The Expo frontend includes a gradient sign-up/login landing screen, a local demo auth
 flow, file upload and native multi-page scanning, page review, and editable
-extracted details with their source quotes and page numbers.
+extracted details with their source quotes and page numbers. Calls are placed through
+[Bland](https://www.bland.ai) by default (`CALL_PROVIDER=bland`); Vapi is still supported
+(`CALL_PROVIDER=vapi`, see [the integration guide](INTEGRATION.md)).
 
 ## Run the mobile app
 
@@ -15,12 +20,17 @@ npm install
 
 Use Node.js 22.13 or newer for the configured Expo SDK.
 
-Start the extraction API as described below. Copy `.env.example` to `.env` and
-set the API URL so a physical phone can reach your computer (replace the sample
-address):
+Start the backend (one server for extraction, review and calls). Copy
+`.env.example` to `.env`, fill in the keys, and set the API URL so a physical phone
+can reach your computer (replace the sample address):
 
 ```sh
-EXPO_PUBLIC_OCR_ENDPOINT=http://192.168.1.25:8000/ocr
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+npm run server
+```
+
+```sh
+EXPO_PUBLIC_API_URL=http://192.168.1.25:8000
 ```
 
 Then start Expo:
@@ -47,52 +57,31 @@ team's licensed Canela Text Medium file when available. No authentication
 service is connected: any entered credentials continue into the demo app, and
 the credentials are not stored.
 
-## Current mobile workflow boundary
+## Mobile workflow
 
-The app currently connects document capture, upload, extraction, page/source
-review, and local correction of extracted fields. Corrections are not saved or
-sent to another analysis service yet. The backend in this repository does not
-provide CMS rate comparison, discrepancy ranking, letter generation, negotiation
-calls, or saved audit history, so the UI does not claim those actions have run.
-When those services are connected, keep the patient review and explicit approval
-step between findings and any communication. Label CMS data as a Medicare
-reference and show the source, date, setting, and confidence for each comparison.
-
-For a quick manual check on a device, try: choose a PDF, choose an image, scan
-multiple pages, retake and remove a page, cancel an upload, deny camera access,
-disconnect the API, and edit a low-confidence or missing field. Use synthetic
-documents until the backend is secured for real patient data.
+Home → upload or scan → check and correct the extracted details → **Check this bill
+for overcharges** (`BillCheck.tsx`): the backend compares each line with Medicare
+rates, Gemini reviews the findings, and the app shows the total to dispute, each
+issue and a summary. The user confirms patient details and the hospital billing
+number, reviews the call script, and approves the call. Call status updates live,
+and the hospital's response (per-issue result, reference number, next steps)
+appears when the call ends. The Audits tab lists every saved case from the backend
+and can resume a dispute. See [the integration guide](INTEGRATION.md).
 
 ## Gemini extraction backend
 
-Install dependencies in a Python virtual environment:
-
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install fastapi uvicorn python-multipart google-genai pillow pypdf
-```
-
-Create a Gemini API key in Google AI Studio and set it on the backend only.
-No Document AI processor, Google Cloud project ID or service-account credentials
-are needed for this implementation.
-
-```sh
-export GEMINI_API_KEY="your-api-key"
-export GEMINI_MODEL="gemini-2.5-flash" # optional; choose a model available to your account
-python3 -m uvicorn ocr:app --app-dir 'document extraction' --host 0.0.0.0 --port 8000
-```
-
-For Expo web, set `ALLOWED_ORIGINS` to the exact frontend origin (for example,
-`http://localhost:8081`). Native Expo requests do not require CORS configuration.
-Never include Google credentials in the mobile app.
+`npm run server` serves `/ocr` from `functionality/api.py` alongside the case routes.
+Create a Gemini API key in Google AI Studio and put it in `.env` as
+`GEMINI_API_KEY` (server only; `GEMINI_MODEL` optionally picks the model). No
+Document AI processor, Google Cloud project or service account is needed. Never
+include Google credentials in the mobile app.
 
 `POST /ocr` accepts repeated multipart `files` fields: at most 10 files, 10 MB
 per file, 30 MB total and 15 pages total. Password-protected PDFs are rejected.
 The `/ocr` route is kept for compatibility, but now returns structured fields:
-provider name, total billed, total adjustments, patient responsibility, currency,
-and service rows (date, CPT/HCPCS code, description, charged amount, adjustments,
-patient responsibility). Each field has `value`, `page_number`, `source_text` and
+provider name, billing phone, state, patient name, account number, total billed,
+total adjustments, patient responsibility, currency, and service rows (date,
+CPT/HCPCS code, description, units, charged amount, adjustments, patient responsibility). Each field has `value`, `page_number`, `source_text` and
 `review_reason`. Missing or ambiguous values are null. Amounts use decimal strings
 rather than floating-point numbers. Each document also includes `source_file`,
 `source_index` (1-based upload order), `pages`, and `review_notes`.
@@ -113,79 +102,121 @@ sent to Google may still complete.
 
 This is a development endpoint: use synthetic bills while integrating. Public
 deployment still needs authentication, HTTPS, rate limits and a request-body
-limit at the proxy (validation occurs after multipart parsing). Persisted field
-correction, CMS comparisons and calls are subsequent features,
-not implemented in this upload slice. Requests that fail extraction return an error
+limit at the proxy (validation occurs after multipart parsing). CMS comparison,
+review and calls are separate backend functions described below.
+Requests that fail extraction return an error
 rather than partial results. A Gemini API key and device testing are needed to
 verify extraction quality on representative documents.
 
 API references: [Gemini structured outputs](https://ai.google.dev/gemini-api/docs/structured-output)
 and [document understanding](https://ai.google.dev/gemini-api/docs/document-processing).
 
-## Comparison and stored cases
+## How a bill gets disputed
 
-`functionality/models.py` is the shared Pydantic contract used by extraction,
-comparison and storage. Keep launching the server from the repository root with
-`python3 -m uvicorn ocr:app --app-dir 'document extraction' ...` so the shared
-`functionality` package is importable.
-
-`functionality/comparision.py` (original spelling retained) accepts one complete
-extracted document. It preserves field evidence, flags unreliable extraction and
-suspected duplicate code/date rows within that document, and uses decimal money
-arithmetic. Missing amounts are not replaced by zero. It does not merge rows,
-compare separate documents as duplicates, or infer codes from descriptions.
+1. **Scan → fields** (`document extraction/ocr.py`): Gemini extracts every service
+   line (date, CPT/HCPCS code with modifiers, units, charge) plus the provider's
+   billing phone, state, patient name and account number, each with a source quote.
+2. **Save** (`functionality/store_bill.py`): one SQLite case per upload, scoped to an
+   owner ID from the authenticated session.
+3. **Compare with CMS** (`functionality/comparision.py`, `cms_pricing.py`): each line is
+   priced against the January 2026 Medicare Physician Fee Schedule in the checked-in
+   CMS archive (SHA-256 verified): every separately priced code, -26/-TC rows, times
+   units, for the provider's state (locality if known, else the state's average, else
+   national). Python flags:
+   - **duplicate charges**: the same code on the same date more than once; the extra
+     rows are disputed in full;
+   - **overcharges**: lines billed above `GEM_OVERCHARGE_MULTIPLE` (default 2) times the
+     Medicare rate; the amount above that "fair amount" is disputed;
+   - **unitemized charges**: a printed total larger than the itemized lines.
+   Labs (CLFS), drugs, DRGs and hospital facility fees are not in this archive, so
+   those lines get no price. Missing units are priced as 1 and flagged.
+4. **Gemini review** (`functionality/review.py`): Gemini decides which candidates to
+   dispute (for example, a repeated venipuncture may be legitimate), can flag other
+   suspicious lines such as unbundling or routine supplies, then writes the patient
+   summary and the call script. Gemini cannot change dollar amounts or cite lines that
+   are not on the bill; Python computes `total_disputed`.
+5. **Call the hospital** (`functionality/calls.py`): the user first authorizes Gem to
+   call on their behalf, then confirms patient details and the billing number and
+   approves the exact plan; Bland (or Vapi) places the call. The agent opens with
+   "I am calling on behalf of [patient], for bill number [number], to dispute the
+   following charges", cites the Medicare Physician Fee Schedule rate for each charge,
+   keeps pressing politely with new reasons until the hospital agrees, and confirms
+   each agreement back ("Just to confirm, you have agreed to lower..."). It waits
+   through silence and unclear audio rather than hanging up, discloses it is an AI if
+   asked, and never pays, gives card details, or accepts a payment plan.
+6. **After the call**: refreshing status saves the transcript, and Gemini summarizes
+   what the hospital agreed to per issue. The app shows the summary, charge-by-charge
+   results, next steps and the full transcript. The case is marked `needs_review`
+   until the patient confirms the corrected bill.
 
 ```python
-from functionality.models import OCRResponse
-from functionality.comparision import analyze_bill
 from functionality.store_bill import BillStore
+from functionality.pipeline import review_stored_bill
+from functionality.calls import get_call_provider, prepare_call, place_call, refresh_call
+from functionality.gemini import Gemini
 
-# payload is the JSON response from POST /ocr.
-extraction = OCRResponse.model_validate(payload)
-audits = [analyze_bill(document) for document in extraction.documents]
-store = BillStore()  # BILL_DB_PATH or data/bills.sqlite3
-# Obtain this from your authenticated backend session, not a request body.
-owner_id = authenticated_user.id
-case = store.save_extracted_bills(owner_id, extraction, audits)
-case_again = store.get_bill(owner_id, case.id)
-case_list = store.my_bills(owner_id)
+store = BillStore()                       # BILL_DB_PATH or data/bills.sqlite3
+case = store.save_extracted_bills(owner_id, ocr_payload)
+case = review_stored_bill(store, owner_id, case.id)   # CMS + Gemini
+print(case.review.summary, case.review.total_disputed, case.review.issues)
+plan = prepare_call(store, owner_id, case.id, '+18005550199',
+                    {'name': 'Pat Example', 'account_number': 'A-1001'})
+# Show plan.model_dump() to the user; after they approve this exact plan:
+provider = get_call_provider()            # Bland or Vapi, from CALL_PROVIDER
+attempt = place_call(store, owner_id, plan, approved=True, provider=provider)
+attempt = refresh_call(store, owner_id, case.id, plan.review_id,
+                       provider=provider, gemini=Gemini())
 ```
 
-There is no CMS data loader/pricing service in this repo yet. `analyze_bill`
-accepts a backend `benchmark_provider(request)` callable and per-line `contexts`
-(keyed by 1-based line number). Each `PricingContext` requires state, locality,
-place of service, units, modifiers and QPP status. The adapter must choose an
-applicable official schedule and return a `Benchmark` matching the entire request,
-with effective dates, release and CMS source URL, or `None` for unsupported cases.
-The benchmark amount must already account for units and modifiers. The URL check
-verifies provenance format only; the adapter is responsible for verifying data.
-A positive `benchmark_difference` is contextual information, never a confirmed
-overcharge, a savings estimate, or the patient's amount owed. No adapter means
-no benchmark prices. An audit's `flagged_count` includes extraction-review needs,
-not just suspected billing discrepancies.
+The Medicare rate is a public benchmark, not a legal cap on hospital prices: the
+hospital may decline. One dispatch claim per review report prevents duplicate calls;
+a lost dispatch response is kept as `unknown`, so check the call provider's dashboard before retrying. SQLite
+stores bill text unencrypted; use synthetic bills during development.
 
-Storage creates one new case per save, preserving every document, source quote,
-review flag and line. It deliberately does not sum totals across documents that
-may describe the same visit. Supplied audits must match the exact document and
-line evidence; omitted audits are generated with comparison unavailable. Queries
-and updates are scoped to the supplied owner ID. This is an internal backend
-library, not an authentication system: do not expose owner IDs, supplied audits,
-benchmark rates or outcome verification as trusted client inputs.
+Hospitals often require the patient to authorize a third party before discussing an
+account. The agent asks what is needed and gets a callback number; this version has
+no live transfer to the patient.
 
-```python
-from functionality.store_bill import NegotiationResult
+## Configuration
 
-store.save_negotiation_result(
-    owner_id, case.id,
-    NegotiationResult(status='needs_review', summary='Provider requested an itemized bill.'),
-)
+Install `requirements.txt` and copy `.env.example` to `.env` (server only; API keys
+never belong in Expo code). `GEM_DEMO_PHONE_NUMBER` is **test mode**: while it is set,
+every call rings that phone instead of the hospital. For Bland, only `BLAND_API_KEY`
+is needed (calls go out from Bland's number pool); `BLAND_MODEL=turbo` is fastest but
+can't navigate phone menus, so use `base` for real hospital lines. See
+[the integration guide](INTEGRATION.md) for the optional Vapi/Telnyx setup.
+
+## Sample data
+
+All sample documents are synthetic. `samples/maria-sanchez/` has a matching itemized
+bill, Medicare Summary Notice and supplemental EOB for one visit, with nine planted
+problems (duplicates, overcharges, upcoding, unbundling, balance billing, an unposted
+payment and more); its README is the answer key. Gem currently reviews each document on
+its own, so upload the itemized bill alone for the cleanest demo.
+
+## Privacy and HIPAA readiness
+
+This is a prototype built and demoed with synthetic data only; it is **not** HIPAA
+compliant and must not be used with real patient bills yet. Call audio is not
+recorded, API keys stay on the server, and bill text is treated as untrusted data.
+The path to HIPAA readiness:
+
+- Business Associate Agreements with every vendor that touches patient data: Gemini
+  via Vertex AI (not an AI Studio API key), the voice provider, and cloud hosting.
+- HTTPS everywhere, an encrypted managed database with a retention policy, per-user
+  accounts with MFA, audit logs, and no patient data in logs.
+- A signed patient authorization naming Gem as the patient's representative (hospitals
+  require it to discuss an account), plus call consent and AI disclosure.
+- A risk assessment, written security and breach-response policies, and staff training.
+
+Run the offline tests (no network, keys or phone calls):
+
+```sh
+python3 -m unittest discover -s tests -v
 ```
 
-A `resolved` negotiation status requires `verified=True` from human oversight.
-Negotiation amounts are decimal strings; they are not automatically counted as
-savings. Calls, transcripts and authentication remain future integrations.
-The existing `/ocr` endpoint does not automatically persist results: add storage
-inside authenticated backend routes when the app/session layer is ready.
-SQLite stores extracted document text locally without application-level encryption;
-use synthetic documents during development. Database files are excluded from Git.
-Runtime tests for these modules and live Gemini/device integration are deferred.
+References: [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output),
+[CMS pricing formula](https://www.cms.gov/medicare/physician-fee-schedule/search/documentation),
+[Bland send call API](https://docs.bland.ai/api-v1/post/calls),
+[Vapi outbound calls](https://docs.vapi.ai/calls/outbound-calling),
+[Vapi Google models](https://docs.vapi.ai/providers/model/gemini).

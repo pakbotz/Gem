@@ -16,3 +16,6 @@ data/
 *.sqlite3-*
 *.db
 *.db-*
+
+# macOS
+.DS_Store
