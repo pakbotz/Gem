@@ -1,6 +1,6 @@
 /** Expo dependencies: npx expo install expo-camera expo-document-picker */
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Button, Image, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
 export type DocumentFile = { uri: string; name: string; mimeType: string; size?: number; file?: Blob };
@@ -21,6 +21,7 @@ export type OCRResult = {
     line_items: LineItem[]; review_notes: string[];
   }[];
   requires_review: boolean;
+  demo_mode?: boolean;
 };
 const summaryFields = ['provider_name', 'total_billed', 'total_adjustments', 'patient_responsibility', 'currency'] as const;
 const lineFields = ['service_date', 'code', 'description', 'charged_amount', 'adjustments', 'patient_responsibility'] as const;
@@ -39,10 +40,22 @@ function isResult(value: unknown): value is OCRResult {
       && Array.isArray(d.line_items) && d.line_items.every(item => isRecord(item) && lineFields.every(k => isField(item[k])))
       && Array.isArray(d.review_notes) && d.review_notes.every(note => typeof note === 'string'));
 }
-function FieldValue({ label, field }: { label: string; field: BillingField }) {
+function FieldEditor({ label, field, onChange, keyboardType = 'default' }: {
+  label: string; field: BillingField; onChange: (value: string) => void;
+  keyboardType?: 'default' | 'decimal-pad';
+}) {
   return <View style={{ gap: 4 }}>
-    <Text selectable><Text style={styles.heading}>{label}: </Text>{field.value ?? 'Not found / unclear'}</Text>
-    {field.source_text && <Text selectable>Source{field.page_number ? ` · Page ${field.page_number}` : ''}: “{field.source_text}”</Text>}
+    <Text style={styles.heading}>{label}</Text>
+    <TextInput
+      accessibilityLabel={label}
+      value={field.value ?? ''}
+      onChangeText={onChange}
+      placeholder="Not found / unclear"
+      placeholderTextColor="#716D79"
+      keyboardType={keyboardType}
+      style={styles.input}
+    />
+    {field.source_text && <Text selectable style={styles.source}>Source{field.page_number ? ` · Page ${field.page_number}` : ''}: “{field.source_text}”</Text>}
     {field.review_reason && <Text style={styles.error}>Review: {field.review_reason}</Text>}
   </View>;
 }
@@ -50,15 +63,37 @@ export type UploadProps = { endpoint: string; onComplete?: (result: OCRResult) =
 export const MAX_FILES = 10;
 const MAX_BYTES = 10 * 1024 * 1024;
 
+export function ActionButton({ title, onPress, disabled = false, variant = 'primary' }: {
+  title: string; onPress: () => void; disabled?: boolean; variant?: 'primary' | 'secondary' | 'text';
+}) {
+  return <Pressable
+    accessibilityRole="button"
+    accessibilityState={{ disabled }}
+    disabled={disabled}
+    onPress={onPress}
+    style={({ pressed }) => [
+      styles.button,
+      variant === 'primary' && styles.primaryButton,
+      variant === 'secondary' && styles.secondaryButton,
+      variant === 'text' && styles.textButton,
+      disabled && styles.buttonDisabled,
+      pressed && !disabled && styles.buttonPressed,
+    ]}
+  >
+    <Text style={[styles.buttonLabel, variant === 'primary' && styles.primaryButtonLabel, variant === 'text' && styles.textButtonLabel]}>{title}</Text>
+  </Pressable>;
+}
+
 /** Shared review/upload UI for both scanned pages and Files app selections.
  * endpoint is the full URL, e.g. http://YOUR_COMPUTER_LAN_IP:8000/ocr.
  * Use HTTPS when deploying. No Google credentials belong in this component.
  */
-export function UploadReview({ files, setFiles, endpoint, onComplete, children, selectionBusy = false }: UploadProps & {
+export function UploadReview({ files, setFiles, endpoint, onComplete, children, selectionBusy = false, onRetake }: UploadProps & {
   files: DocumentFile[];
   setFiles: (files: DocumentFile[]) => void;
   children: (busy: boolean) => React.ReactNode;
   selectionBusy?: boolean;
+  onRetake?: (index: number) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -102,7 +137,7 @@ export function UploadReview({ files, setFiles, endpoint, onComplete, children, 
     xhr.upload.onprogress = event => {
       if (event.lengthComputable) {
         const percent = Math.round(event.loaded / event.total * 100);
-        setStatus(percent === 100 ? 'Upload complete. Extracting billing fields…' : `Uploading ${percent}%`);
+        setStatus(percent === 100 ? 'Reading your bill and organizing the details…' : `Uploading ${percent}%`);
       }
     };
     xhr.onload = () => {
@@ -118,7 +153,7 @@ export function UploadReview({ files, setFiles, endpoint, onComplete, children, 
       }
       finish();
       setResult(data);
-      setStatus('Billing fields extracted. Verify all values against your original documents.');
+      setStatus('Details ready. Check each value against your original document.');
       onComplete?.(data);
     };
     xhr.onerror = () => fail('Could not reach the extraction server. Check your connection and server URL.');
@@ -139,38 +174,85 @@ export function UploadReview({ files, setFiles, endpoint, onComplete, children, 
       {file.mimeType.startsWith('image/')
         ? <Image source={{ uri: file.uri }} style={styles.preview} accessibilityLabel={`Preview of ${file.name}`} />
         : <Text>PDF selected. All supported pages will be extracted; PDF preview is not available here.</Text>}
-      <Button title={`Remove file ${index + 1}`} disabled={busy || selectionBusy} onPress={() => setFiles(files.filter((_, i) => i !== index))} />
+      <View style={styles.fileActions}>
+        {onRetake && <ActionButton title={`Retake page ${index + 1}`} variant="text" disabled={busy || selectionBusy} onPress={() => onRetake(index)} />}
+        <ActionButton title={`Remove page ${index + 1}`} variant="text" disabled={busy || selectionBusy} onPress={() => setFiles(files.filter((_, i) => i !== index))} />
+      </View>
     </View>)}
     <Text>Uploading sends these documents to the backend and Google Gemini for billing field extraction.</Text>
-    <Button title={`Upload & extract (${files.length})`} disabled={busy || selectionBusy || files.length === 0} onPress={upload} />
-    {busy && <><ActivityIndicator /><Button title="Cancel upload" onPress={() => request.current?.abort()} /></>}
+    <ActionButton title={`Upload & extract (${files.length})`} disabled={busy || selectionBusy || files.length === 0} onPress={upload} />
+    {busy && <><ActivityIndicator color="#5D3ED3" /><ActionButton title="Cancel upload" variant="secondary" onPress={() => request.current?.abort()} /></>}
     {!!status && <Text accessibilityLiveRegion="polite">{status}</Text>}
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
     {result?.documents.map((doc, index) => <View key={index} style={styles.card}>
+      {result.demo_mode && <View style={styles.demoBanner}>
+        <Text style={styles.heading}>DEMO DATA</Text>
+        <Text style={styles.body}>These example values were not read from your selected document. No billing or Medicare comparison was performed.</Text>
+      </View>}
+      <Text style={styles.title}>Check the details</Text>
       <Text style={styles.heading}>{doc.source_index}. {doc.source_file}</Text>
-      <Text>AI-extracted values — review required. These are not confirmed billing findings.</Text>
-      <FieldValue label="Provider" field={doc.provider_name} />
-      <FieldValue label="Currency" field={doc.currency} />
-      <FieldValue label="Total billed" field={doc.total_billed} />
-      <FieldValue label="Total adjustments" field={doc.total_adjustments} />
-      <FieldValue label="Patient responsibility" field={doc.patient_responsibility} />
+      <Text style={styles.body}>{result.demo_mode ? 'Use this sample response to try editing extracted fields.' : 'These are details read from your document, not confirmed billing findings. You can correct them before the next step.'}</Text>
+      <FieldEditor label="Provider" field={doc.provider_name} onChange={value => updateSummaryField(setResult, index, 'provider_name', value)} />
+      <FieldEditor label="Currency" field={doc.currency} onChange={value => updateSummaryField(setResult, index, 'currency', value)} />
+      <FieldEditor label="Total billed" field={doc.total_billed} keyboardType="decimal-pad" onChange={value => updateSummaryField(setResult, index, 'total_billed', value)} />
+      <FieldEditor label="Total adjustments" field={doc.total_adjustments} keyboardType="decimal-pad" onChange={value => updateSummaryField(setResult, index, 'total_adjustments', value)} />
+      <FieldEditor label="Patient responsibility" field={doc.patient_responsibility} keyboardType="decimal-pad" onChange={value => updateSummaryField(setResult, index, 'patient_responsibility', value)} />
       {doc.review_notes.map((note, i) => <Text key={i} style={styles.error}>{note}</Text>)}
       {doc.line_items.map((item, i) => <View key={i} style={styles.card}>
         <Text style={styles.heading}>Service {i + 1}</Text>
-        <FieldValue label="Service date" field={item.service_date} />
-        <FieldValue label="CPT/HCPCS" field={item.code} />
-        <FieldValue label="Description" field={item.description} />
-        <FieldValue label="Charged" field={item.charged_amount} />
-        <FieldValue label="Adjustments" field={item.adjustments} />
-        <FieldValue label="Patient responsibility" field={item.patient_responsibility} />
+        <FieldEditor label="Service date" field={item.service_date} onChange={value => updateLineField(setResult, index, i, 'service_date', value)} />
+        <FieldEditor label="CPT/HCPCS code" field={item.code} onChange={value => updateLineField(setResult, index, i, 'code', value)} />
+        <FieldEditor label="Description" field={item.description} onChange={value => updateLineField(setResult, index, i, 'description', value)} />
+        <FieldEditor label="Charged amount" field={item.charged_amount} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'charged_amount', value)} />
+        <FieldEditor label="Adjustments" field={item.adjustments} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'adjustments', value)} />
+        <FieldEditor label="Patient responsibility" field={item.patient_responsibility} keyboardType="decimal-pad" onChange={value => updateLineField(setResult, index, i, 'patient_responsibility', value)} />
       </View>)}
       <Text style={styles.heading}>Extracted page text</Text>
       {doc.pages.map(page => <View key={page.page_number}>
         <Text style={styles.heading}>Page {page.page_number}</Text>
         <Text selectable>{page.text || 'No text found. Try a clearer scan.'}</Text>
       </View>)}
+      <View style={styles.noteCard}>
+        <Text style={styles.heading}>What happens next</Text>
+        <Text style={styles.source}>A Medicare reference can help flag a charge for review. It is not automatically what you owe or proof of an overcharge. Audit comparison and saved corrections are not connected in this upload integration yet.</Text>
+      </View>
     </View>)}
   </ScrollView>;
+}
+
+function updateSummaryField(
+  setResult: React.Dispatch<React.SetStateAction<OCRResult | null>>,
+  documentIndex: number,
+  key: 'provider_name' | 'total_billed' | 'total_adjustments' | 'patient_responsibility' | 'currency',
+  value: string,
+) {
+  setResult(current => {
+    if (!current) return current;
+    const documents = [...current.documents];
+    const document = { ...documents[documentIndex] };
+    document[key] = { ...document[key], value: value || null };
+    documents[documentIndex] = document;
+    return { ...current, documents };
+  });
+}
+
+function updateLineField(
+  setResult: React.Dispatch<React.SetStateAction<OCRResult | null>>,
+  documentIndex: number,
+  lineIndex: number,
+  key: keyof LineItem,
+  value: string,
+) {
+  setResult(current => {
+    if (!current) return current;
+    const documents = [...current.documents];
+    const document = { ...documents[documentIndex], line_items: [...documents[documentIndex].line_items] };
+    const line = { ...document.line_items[lineIndex] };
+    line[key] = { ...line[key], value: value || null };
+    document.line_items[lineIndex] = line;
+    documents[documentIndex] = document;
+    return { ...current, documents };
+  });
 }
 
 export default function FileUpload(props: UploadProps) {
@@ -198,17 +280,32 @@ export default function FileUpload(props: UploadProps) {
     {busy => <View style={styles.card}>
       <Text style={styles.title}>Upload a medical document</Text>
       <Text>Select a bill, EOB or Medicare Summary Notice from your Files app.</Text>
-      <Button title={picking ? 'Opening Files…' : 'Choose files'} disabled={busy || picking} onPress={pick} />
+      <ActionButton title={picking ? 'Opening Files…' : 'Choose files'} disabled={busy || picking} onPress={pick} />
       {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
     </View>}
   </UploadReview>;
 }
 
 export const styles = StyleSheet.create({
-  container: { padding: 20, paddingBottom: 48, gap: 16, backgroundColor: '#f5f8fb' },
-  card: { padding: 16, borderRadius: 16, backgroundColor: '#ffffff', gap: 12 },
-  title: { fontSize: 24, fontWeight: '700', color: '#123047' },
-  heading: { fontSize: 16, fontWeight: '600', color: '#123047' },
-  preview: { width: '100%', height: 260, resizeMode: 'contain', backgroundColor: '#e9eef3' },
-  error: { color: '#a01818' },
+  container: { paddingHorizontal: 24, paddingTop: 4, paddingBottom: 48, gap: 16, backgroundColor: '#F8F6F2' },
+  card: { padding: 18, borderWidth: 1, borderColor: '#E1DCD5', borderRadius: 18, backgroundColor: '#FFFFFF', gap: 12 },
+  title: { fontFamily: 'Canela-Light', fontSize: 25, lineHeight: 32, color: '#24232B' },
+  heading: { fontSize: 15, fontWeight: '600', color: '#24232B' },
+  body: { fontSize: 14, lineHeight: 20, color: '#716D79' },
+  source: { fontSize: 12, lineHeight: 18, color: '#716D79' },
+  input: { minHeight: 48, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#CFC9C1', borderRadius: 10, backgroundColor: '#FFFFFF', color: '#24232B', fontSize: 15 },
+  preview: { width: '100%', height: 260, resizeMode: 'contain', borderRadius: 12, backgroundColor: '#F1EEEA' },
+  fileActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  noteCard: { padding: 14, gap: 6, borderRadius: 14, backgroundColor: '#F8F6F2' },
+  demoBanner: { padding: 14, gap: 6, borderWidth: 1, borderColor: '#E1DCD5', borderRadius: 14, backgroundColor: '#F0EBFA' },
+  error: { color: '#A01818', fontSize: 13, lineHeight: 19 },
+  button: { minHeight: 50, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18, borderRadius: 25 },
+  primaryButton: { backgroundColor: '#5D3ED3' },
+  secondaryButton: { borderWidth: 1, borderColor: '#5D3ED3', backgroundColor: '#FFFFFF' },
+  textButton: { minHeight: 40, alignSelf: 'flex-start', paddingHorizontal: 4 },
+  buttonLabel: { fontSize: 14, fontWeight: '600', color: '#5D3ED3' },
+  primaryButtonLabel: { color: '#FFFFFF' },
+  textButtonLabel: { color: '#716D79' },
+  buttonDisabled: { opacity: 0.45 },
+  buttonPressed: { opacity: 0.78 },
 });

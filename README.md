@@ -1,45 +1,67 @@
-# Gem
+# BillBacked
 
-Medical billing assistant — document upload and structured extraction foundation.
+Expo frontend and FastAPI extraction service for a mobile medical-bill review flow.
+The frontend includes a gradient sign-up/login landing screen, a local demo auth
+flow, file upload and native multi-page scanning, page review, and editable
+extracted details with their source quotes and page numbers.
 
-Status: implementation ready for app integration; Gemini SDK integration and
-end-to-end device testing are deferred. No live extraction has been verified yet.
+## Run the mobile app
 
-The `document extraction` folder contains exactly three implementation files:
-
-- `ScanUpload.tsx`: Expo camera capture, multiple pages and image review.
-- `FileUpload.tsx`: native Files picker for PDF/JPEG/PNG, plus the shared review,
-  multipart upload, progress, cancellation and structured billing results with source quotes.
-- `ocr.py`: FastAPI endpoint using Gemini structured outputs and Pydantic validation.
-  Returns billing fields, source quotes, page text and review flags.
-
-## Expo integration
-
-These are components, not a scaffolded application. Expo Go runs React Native;
-it does not host Next.js. In an Expo TypeScript project, install:
+Install the JavaScript dependencies:
 
 ```sh
-npx expo install expo-camera expo-document-picker
+npm install
 ```
 
-Copy the two TSX files into that project and render either component on an
-active screen (unmount the scan screen when navigating away):
+Use Node.js 22.13 or newer for the configured Expo SDK.
 
-```tsx
-import ScanUpload from './document extraction/ScanUpload';
-// Or import FileUpload from './document extraction/FileUpload';
+Start the extraction API as described below. Copy `.env.example` to `.env` and
+set the API URL so a physical phone can reach your computer (replace the sample
+address):
 
-export default function App() {
-  return <ScanUpload endpoint="http://YOUR_COMPUTER_LAN_IP:8000/ocr" />;
-}
+```sh
+EXPO_PUBLIC_OCR_ENDPOINT=http://192.168.1.25:8000/ocr
 ```
 
-Use your computer's LAN address, not `localhost`, on a physical phone, with both
-devices on the same network. Wrap the screen in your app's safe-area layout.
-Both components accept an optional `onComplete(result)` callback to hand extraction
-results to the next step. PDF selection shows the filename; image selection
-shows a preview. Camera captures are photos, without automatic edge detection
-or perspective correction.
+Then start Expo:
+
+```sh
+npx expo start
+```
+
+Install the Expo Go version that matches this project's Expo SDK, scan the QR
+code, and keep the phone and development computer on the same Wi-Fi. On a phone,
+use your computer's LAN IP rather than `localhost`. `npx expo start --tunnel`
+can help the phone reach Metro when local discovery is blocked; the phone still
+needs a reachable API URL for document uploads.
+
+The Expo Camera document scanner is available on iOS and Android and returns
+page images in the app cache. The user can review, remove, add, or retake pages
+before upload. File selection accepts PDF, JPEG, and PNG. Keep sample documents
+under the API limits: 10 MB per file, 30 MB total, and 15 pages total.
+
+`assets/fonts/Canela-Thin.ttf` is loaded through `expo-font` for the Gem and
+serif display titles. The requested Canela Text Medium file was not present on
+the machine; this repo contains Canela Thin, so replace that asset with the
+team's licensed Canela Text Medium file when available. No authentication
+service is connected: any entered credentials continue into the demo app, and
+the credentials are not stored.
+
+## Current mobile workflow boundary
+
+The app currently connects document capture, upload, extraction, page/source
+review, and local correction of extracted fields. Corrections are not saved or
+sent to another analysis service yet. The backend in this repository does not
+provide CMS rate comparison, discrepancy ranking, letter generation, negotiation
+calls, or saved audit history, so the UI does not claim those actions have run.
+When those services are connected, keep the patient review and explicit approval
+step between findings and any communication. Label CMS data as a Medicare
+reference and show the source, date, setting, and confidence for each comparison.
+
+For a quick manual check on a device, try: choose a PDF, choose an image, scan
+multiple pages, retake and remove a page, cancel an upload, deny camera access,
+disconnect the API, and edit a low-confidence or missing field. Use synthetic
+documents until the backend is secured for real patient data.
 
 ## Gemini extraction backend
 
@@ -91,7 +113,8 @@ sent to Google may still complete.
 
 This is a development endpoint: use synthetic bills while integrating. Public
 deployment still needs authentication, HTTPS, rate limits and a request-body
-limit at the proxy (validation occurs after multipart parsing). Editable field correction, CMS comparisons and calls are subsequent features,
+limit at the proxy (validation occurs after multipart parsing). Persisted field
+correction, CMS comparisons and calls are subsequent features,
 not implemented in this upload slice. Requests that fail extraction return an error
 rather than partial results. A Gemini API key and device testing are needed to
 verify extraction quality on representative documents.

@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "BillBacked",
+    "slug": "billbacked-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow BillBacked to scan your medical documents.",
+          "recordAudioAndroid": false
+        }
+      ]
+    ]
+  }
+}
